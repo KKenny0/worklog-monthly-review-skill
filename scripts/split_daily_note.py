@@ -71,7 +71,17 @@ def parse_daily_note(filepath):
             continue
 
         # 检测日标题 —— 日标题一定属于当前月
-        if RE_DATE.match(stripped) and current_month:
+        # 如果没有月级标题，从日期推断月份
+        if RE_DATE.match(stripped):
+            date_match = RE_DATE.match(stripped)
+            year = int(date_match.group(1))
+            month = int(date_match.group(2))
+            inferred_month = f"{year:04d}-{month:02d}"
+            if inferred_month != current_month:
+                # 月份切换（或首次推断）
+                current_month = inferred_month
+                if current_month not in months:
+                    months[current_month] = []
             months[current_month].append(line)
             i += 1
             continue

@@ -29,7 +29,7 @@ from collections import Counter
 RE_DATE = re.compile(r'^###\s*(\d{4})\.(\d{2})\.(\d{2})')
 # 项目标签：- [项目名]，排除 [x] 和 [ ] 任务标记
 RE_PROJECT = re.compile(r'^-\s*\[([^\]]+)\]')
-RE_MODULE = re.compile(r'^\t-\s*\{([^}]+)\}')
+RE_MODULE = re.compile(r'^(\t| {4})-\s*\{([^}]+)\}')
 RE_CATEGORY = re.compile(r'【([^】]+)】')
 RE_TASK_DONE = re.compile(r'^\s*-\s*\[x\]')
 RE_TASK_TODO = re.compile(r'^\s*-\s*\[\s*\]')
@@ -69,6 +69,30 @@ STOP_WORDS = frozenset([
 ])
 
 
+def get_indent_level(line):
+    """计算行首缩进层级。兼容 Tab 和 4 空格缩进。"""
+    count = 0
+    for ch in line:
+        if ch == '\t':
+            count += 1
+        elif ch == ' ':
+            pass  # 空格计入但不单独计数，按 4 空格 = 1 层级
+        else:
+            break
+    # 计算前导空格数
+    spaces = 0
+    for ch in line:
+        if ch == ' ':
+            spaces += 1
+        else:
+            break
+    # 如果前导空白全是空格，按 4 空格 = 1 层级
+    if count == 0 and spaces > 0:
+        return spaces // 4
+    # 混合缩进：tab 数 + 剩余空格按比例
+    return count + (spaces % 4) // 4
+
+
 def extract_project(line):
     """从 `- [项目名]` 格式中提取项目名，排除 [x] 和 [ ] 任务标记。"""
     m = RE_PROJECT.match(line.strip())
@@ -81,9 +105,9 @@ def extract_project(line):
 
 
 def extract_module(line):
-    """从 `\\t- {模块名}` 格式中提取模块名。"""
+    """从 `\t- {模块名}` 或 `    - {模块名}` 格式中提取模块名。"""
     m = RE_MODULE.match(line)
-    return m.group(1) if m else None
+    return m.group(2) if m else None
 
 
 def extract_categories(text):
@@ -158,6 +182,10 @@ def parse_monthly_file(filepath):
     # 全文文本，用于关键词提取
     all_text = []
 
+    # 任务子条目追踪状态
+    current_task = None      # {'task': str, 'details': [], '_indent': int}
+    current_task_key = None  # 'completed_tasks' or 'incomplete_tasks'
+
     for line in lines:
         stripped = line.strip()
 
@@ -166,6 +194,12 @@ def parse_monthly_file(filepath):
         if date_match:
             # 保存上一个 entry
             if current_entry:
+                # 完成未结束的任务收集
+                if current_task is not None:
+                    current_entry[current_task_key].append(
+                        {'task': current_task['task'], 'details': current_task['details']}
+                    )
+                    current_task = None
                 current_entry['raw_text'] = '\n'.join(current_entry.pop('_lines', []))
                 entries.append(current_entry)
 
@@ -173,6 +207,7 @@ def parse_monthly_file(filepath):
             current_date = f"{year}.{month}.{day}"
             current_entry = {
                 'date': current_date,
+                'daily_focus': '',
                 'projects': [],
                 'modules': [],
                 'categories': [],
@@ -207,24 +242,72 @@ def parse_monthly_file(filepath):
         if categories:
             current_entry['categories'].extend(categories)
 
-        # 检测任务完成状态
-        if RE_TASK_DONE.match(stripped):
-            # 提取任务描述（去掉 [x] 前缀）
-            task_desc = re.sub(r'^\s*-\s*\[x\]\s*', '', stripped)
+        # --- 任务与子条目追踪 ---
+        is_done = bool(RE_TASK_DONE.match(stripped))
+        is_todo = bool(RE_TASK_TODO.match(stripped))
+
+        if is_done or is_todo:
+            # 完成上一条任务的子条目收集
+            if current_task is not None:
+                current_entry[current_task_key].append(
+                    {'task': current_task['task'], 'details': current_task['details']}
+                )
+            # 开始新任务
+            task_desc = re.sub(r'^\s*-\s*\[(?:x|\s*)\]\s*', '', stripped)
             if task_desc:
-                current_entry['completed_tasks'].append(task_desc)
-        elif RE_TASK_TODO.match(stripped):
-            task_desc = re.sub(r'^\s*-\s*\[\s*\]\s*', '', stripped)
-            if task_desc:
-                current_entry['incomplete_tasks'].append(task_desc)
+                current_task = {
+                    'task': task_desc,
+                    'details': [],
+                    '_indent': get_indent_level(line),
+                }
+                current_task_key = 'completed_tasks' if is_done else 'incomplete_tasks'
+            else:
+                current_task = None
+        elif current_task is not None:
+            task_indent = current_task['_indent']
+            line_indent = get_indent_level(line)
+            if stripped.startswith('- ') and line_indent > task_indent:
+                # 子条目：比父任务缩进更深的列表项
+                detail_text = re.sub(r'^-\s*', '', stripped)
+                if detail_text:
+                    current_task['details'].append(detail_text)
+            elif stripped and line_indent <= task_indent:
+                # 缩进回退或有内容行回到同级，结束当前任务收集
+                current_entry[current_task_key].append(
+                    {'task': current_task['task'], 'details': current_task['details']}
+                )
+                current_task = None
+
+        # 提取当日焦点
+        if stripped.startswith('>') and '当日焦点' in stripped:
+            focus = re.sub(r'^>\s*🎯?\s*当日焦点[：:]\s*', '', stripped).strip()
+            if focus:
+                current_entry['daily_focus'] = focus
 
         # 提取各类信号
         current_entry['status_signals'].extend(extract_status_signals(stripped))
         current_entry['risk_signals'].extend(extract_risk_signals(stripped))
         current_entry['next_action_signals'].extend(extract_next_action_signals(stripped))
 
+        # 提取内联状态标记（出现在列表项中的 【后续动作】【进行中】【风险】等）
+        inline_markers = re.findall(r'【(后续动作|进行中|待执行|性能优化)】', stripped)
+        if inline_markers:
+            for marker in inline_markers:
+                if marker == '后续动作':
+                    current_entry['next_action_signals'].append('【后续动作】')
+                elif marker == '进行中':
+                    current_entry['status_signals'].append('【进行中】')
+                elif marker == '待执行':
+                    current_entry['next_action_signals'].append('【待执行】')
+                elif marker == '性能优化':
+                    current_entry['status_signals'].append('【性能优化】')
+
     # 保存最后一个 entry
     if current_entry:
+        if current_task is not None:
+            current_entry[current_task_key].append(
+                {'task': current_task['task'], 'details': current_task['details']}
+            )
         current_entry['raw_text'] = '\n'.join(current_entry.pop('_lines', []))
         entries.append(current_entry)
 

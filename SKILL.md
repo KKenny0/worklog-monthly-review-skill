@@ -61,6 +61,8 @@ evidence_mode: strict            # strict | best_effort
 - `month_filter`：只处理指定月份，格式 `YYYY-MM`，`null` 表示处理所有月份
 - `project_filters`：只保留指定项目的视角，如 `["项目A"]`，空列表表示不限
 - `evidence_mode`：`strict`（默认）要求每条总结都有原文依据，`best_effort` 允许适度归纳
+- `real_projects`：手动指定真实项目列表（可选）。默认自动检测（出现天数 >= 2 天的项目视为真实项目）
+- `real_project_min_days`：自动检测真实项目的最少出现天数阈值（默认 2）
 
 ## 输出契约
 
@@ -116,7 +118,8 @@ evidence_mode: strict            # strict | best_effort
 
 1. 运行 `scripts/split_daily_note.py`，传入 `input_file` 和 `output_dir`
 2. 脚本解析年/月/日节点，将同月内容合并输出为 `YYYY-MM.md`
-3. 按 `overwrite_policy` 处理已有文件
+3. 如果 Daily Note 中缺少 `##` 月级标题（只有 `#` 年标题和 `###` 日期标题），脚本会自动从日期推断月份
+4. 按 `overwrite_policy` 处理已有文件
 4. 如果指定了 `month_filter`，只输出该月
 5. 检查脚本输出，确认生成的月度文件数量和内容正确
 
@@ -125,10 +128,13 @@ evidence_mode: strict            # strict | best_effort
 1. 对每个需要生成总结的月份，运行 `scripts/extract_worklog_signals.py`
 2. 脚本从月度归档中提取结构化信号：
    - 项目标签（`- [xxx]` 格式）
-   - 模块标签（`- {xxx}` 格式）
+   - 模块标签（`- {xxx}` 格式，兼容 Tab 和 4 空格缩进）
    - 类别标签（`【能力升级】`、`【结构变更】`、`【问题定位】`等）
    - 完成状态（`[x]` 已完成 / `[ ]` 未完成）
    - 具体工作内容文本
+   - **任务子条目**：自动捕获任务下方的缩进子列表（详细说明、规模信息等）
+   - **当日焦点**：从 `> 🎯 当日焦点：` 行提取每日工作重心
+   - **内联状态标记**：识别 `【后续动作】`、`【进行中】`、`【待执行】`、`【性能优化】` 等内联标记
 3. 输出中间层 JSON 结构，供下一步使用
 4. 将中间层 JSON 保存到 `output_dir` 下（文件名 `YYYY-MM.signals.json`），方便调试和复用
 
@@ -144,12 +150,16 @@ evidence_mode: strict            # strict | best_effort
    - 统计已完成/未完成事项
    - 收集高频关键词
    - 识别风险词和下一步信号
-   - 将 `real_projects` 列表加入骨架 JSON
+   - **自动识别真实项目**：出现天数 >= 2 天的项目视为真实项目（可通过 `--real-projects` 手动覆盖）
+   - **保留任务子条目**：每个任务附带其详细说明，供归纳时参考
+   - **收集当日焦点**：各日期的工作重心摘要
 3. 输出结构化骨架 JSON（`YYYY-MM.skeleton.json`）
 
 #### 4b：Claude 撰写总结
 
 读取 `reference/worklog-summary-template.md` 模板、读取 `YYYY-MM.skeleton.json` 骨架数据、读取原始月度归档 `YYYY-MM.md`。
+
+骨架数据中的 `daily_focuses` 字段包含各日期的工作焦点摘要，可辅助撰写"本月概览"和判断工作重心变化趋势。
 
 然后按模板格式撰写 `YYYY-MM.summary.md`，写入到与月度归档相同的目录。
 
@@ -160,10 +170,12 @@ evidence_mode: strict            # strict | best_effort
 - 不要把多条独立的小修复包装成"重大成果"
 - 如果某个项目在当月只有零星记录，如实说明"记录较少"，不要强行展开
 - 同一任务跨多个项目时，只在活跃天数最多的项目下列出，避免重复
+- **利用子条目做归纳**：骨架数据中每个任务附带的 `details` 字段包含详细说明，应作为归纳主题段落的素材来源，而非逐条罗列任务本身
 - 已完成事项按类别分组（能力升级/结构变更/问题定位/配置调整/文档优化），不按平铺列表
 - 保留关键数据的代码变更量信息（如 `+160/-2 行`），它们能快速反映工作规模
 - 误检测项目（不在 `real_projects` 列表中的）在"本月主线"中标注，但不展开详细事项
 - 总结总长度控制在 300 行以内
+- **输出格式以 `reference/worklog-summary-template.md` 为准**：使用归纳式主题段落，不使用逐条日期罗列
 
 ### Step 5：输出执行摘要
 
@@ -251,4 +263,3 @@ evidence_mode: strict            # strict | best_effort
 | `reference/daily-note-format.md` | 需要理解 Daily Note 格式约定时 |
 | `reference/worklog-summary-template.md` | Claude 撰写总结时（必须读取） |
 | `reference/project-tagging-guide.md` | 需要项目归类规则时 |
-| `reference/output-examples.md` | 需要参考输入输出样例时 |

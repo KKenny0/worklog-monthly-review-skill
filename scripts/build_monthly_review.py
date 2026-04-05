@@ -27,8 +27,8 @@ import sys
 from collections import Counter, defaultdict
 
 
-# 已知真实项目列表（用于区分误检测）
-REAL_PROJECTS = {'AI 漫剧生成', '短剧成片', '专利'}
+# 默认最少出现天数阈值：出现天数 >= 此值的项目视为真实项目
+DEFAULT_REAL_PROJECT_MIN_DAYS = 2
 
 
 def group_by_project(entries):
@@ -46,6 +46,20 @@ def group_by_project(entries):
     return dict(project_entries), unassigned
 
 
+def detect_real_projects(project_entries, min_days=2):
+    """根据出现天数自动识别真实项目，过滤误检测（如 Markdown 链接）。
+
+    Markdown 链接误检测的特征：项目名通常只在 1 天出现，
+    且文本中包含 URL（括号开头）。
+    """
+    real = set()
+    for project, entries in project_entries.items():
+        active_days = len(set(e['date'] for e in entries))
+        if active_days >= min_days:
+            real.add(project)
+    return sorted(real)
+
+
 def collect_completed_items(project_entries):
     """收集各项目的已完成事项。"""
     result = {}
@@ -53,12 +67,28 @@ def collect_completed_items(project_entries):
         items = []
         for entry in entries:
             for task in entry.get('completed_tasks', []):
+                task_text = task['task'] if isinstance(task, dict) else task
+                task_details = task.get('details', []) if isinstance(task, dict) else []
                 items.append({
                     'date': entry['date'],
-                    'task': task,
+                    'task': task_text,
+                    'details': task_details,
                 })
         result[project] = items
     return result
+
+
+def collect_daily_focuses(entries):
+    """收集各日期的当日焦点。"""
+    focuses = []
+    for entry in entries:
+        focus = entry.get('daily_focus', '')
+        if focus:
+            focuses.append({
+                'date': entry['date'],
+                'focus': focus,
+            })
+    return focuses
 
 
 def collect_incomplete_items(project_entries):
@@ -68,15 +98,19 @@ def collect_incomplete_items(project_entries):
         items = []
         for entry in entries:
             for task in entry.get('incomplete_tasks', []):
+                task_text = task['task'] if isinstance(task, dict) else task
+                task_details = task.get('details', []) if isinstance(task, dict) else []
                 items.append({
                     'date': entry['date'],
-                    'task': task,
+                    'task': task_text,
+                    'details': task_details,
                 })
             for signal in entry.get('status_signals', []):
                 if signal in {'调整中', '优化中', '联调中', '测试中', '迭代中'}:
                     items.append({
                         'date': entry['date'],
                         'task': f"[进行中信号] {signal}",
+                        'details': [],
                     })
         result[project] = items
     return result
@@ -131,9 +165,17 @@ def identify_main_threads(project_entries, high_freq_topics):
     return threads
 
 
-def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode='strict'):
+def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode='strict',
+                        real_projects=None, real_project_min_days=DEFAULT_REAL_PROJECT_MIN_DAYS):
     """
     构建月度总结骨架。
+
+    参数：
+        signals: 信号 JSON 数据
+        summary_mode: 总结模式
+        evidence_mode: 证据模式
+        real_projects: 手动指定的真实项目列表（None 则自动检测）
+        real_project_min_days: 自动检测的最少出现天数阈值
 
     返回一个 dict，包含结构化的总结数据，供 Claude 生成 summary.md。
     """
@@ -144,12 +186,19 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
     # 按项目归并
     project_entries, unassigned = group_by_project(entries)
 
+    # 识别真实项目：手动指定 或 自动检测
+    if real_projects is not None:
+        detected_real = sorted(real_projects)
+    else:
+        detected_real = detect_real_projects(project_entries, real_project_min_days)
+
     # 收集各维度数据
     completed = collect_completed_items(project_entries)
     incomplete = collect_incomplete_items(project_entries)
     risks = collect_risks(entries)
     next_actions = collect_next_actions(entries)
     main_threads = identify_main_threads(project_entries, high_freq)
+    daily_focuses = collect_daily_focuses(entries)
 
     # 统计
     total_completed = sum(len(items) for items in completed.values())
@@ -159,7 +208,7 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
         'month': month,
         'summary_mode': summary_mode,
         'evidence_mode': evidence_mode,
-        'real_projects': sorted(REAL_PROJECTS),
+        'real_projects': detected_real,
         'statistics': {
             'total_days': signals.get('total_days', 0),
             'total_projects': len(project_entries),
@@ -173,6 +222,7 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
         'by_project': {},
         'risks': risks,
         'next_actions': next_actions,
+        'daily_focuses': daily_focuses,
         'unassigned_entries_count': len(unassigned),
         'warnings': [],
     }
@@ -183,7 +233,7 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
             'completed_items': completed.get(project, []),
             'incomplete_items': incomplete.get(project, []),
             'active_days': len(set(e['date'] for e in project_entries[project])),
-            'is_real_project': project in REAL_PROJECTS,
+            'is_real_project': project in set(detected_real),
         }
 
     if summary_mode == 'engineering_review':
@@ -232,6 +282,11 @@ def main():
     parser.add_argument('--evidence-mode', default='strict',
                         choices=['strict', 'best_effort'],
                         help='证据模式 (默认: strict)')
+    parser.add_argument('--real-projects', nargs='*', default=None,
+                        help='手动指定真实项目列表（空格分隔），默认自动检测')
+    parser.add_argument('--real-project-min-days', type=int,
+                        default=DEFAULT_REAL_PROJECT_MIN_DAYS,
+                        help=f'自动检测真实项目的最少出现天数阈值 (默认: {DEFAULT_REAL_PROJECT_MIN_DAYS})')
 
     args = parser.parse_args()
 
@@ -242,7 +297,11 @@ def main():
     with open(args.signals_file, 'r', encoding='utf-8') as f:
         signals = json.load(f)
 
-    skeleton = build_review_skeleton(signals, args.summary_mode, args.evidence_mode)
+    skeleton = build_review_skeleton(
+        signals, args.summary_mode, args.evidence_mode,
+        real_projects=args.real_projects,
+        real_project_min_days=args.real_project_min_days,
+    )
 
     # 保存骨架 JSON
     month = skeleton['month']
