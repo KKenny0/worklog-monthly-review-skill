@@ -134,6 +134,10 @@ daily-note-monthly-review/
     └── project-tagging-guide.md      # Project classification methodology
 ```
 
+## Related
+
+- [git-daily-note-updater-skill](https://github.com/KKenny0/git-daily-note-updater-skill) — Generate or update Daily Note entries from git commit history with diff analysis. Use it to fill in daily notes, then use this skill to produce monthly summaries.
+
 ## License
 
 MIT
