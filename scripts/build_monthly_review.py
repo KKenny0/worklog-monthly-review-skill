@@ -25,6 +25,7 @@ import json
 import os
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime
 
 
 # 默认最少出现天数阈值：出现天数 >= 此值的项目视为真实项目
@@ -204,6 +205,12 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
     total_completed = sum(len(items) for items in completed.values())
     total_incomplete = sum(len(items) for items in incomplete.values())
 
+    # 收集类别分布（所有模式都输出）
+    all_categories = []
+    for entry in entries:
+        all_categories.extend(entry.get('categories', []))
+    category_distribution = dict(Counter(all_categories))
+
     skeleton = {
         'month': month,
         'summary_mode': summary_mode,
@@ -216,9 +223,11 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
             'total_incomplete_tasks': total_incomplete,
             'total_risk_signals': len(risks),
             'total_next_action_signals': len(next_actions),
+            'total_categories': len(all_categories),
         },
         'main_threads': main_threads,
         'high_frequency_topics': high_freq[:15],
+        'category_distribution': category_distribution,
         'by_project': {},
         'risks': risks,
         'next_actions': next_actions,
@@ -239,6 +248,9 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
     if summary_mode == 'engineering_review':
         skeleton['engineering_details'] = build_engineering_details(entries, project_entries)
 
+    # 工作阶段检测（所有模式都输出）
+    skeleton['work_phases'] = detect_work_phases(entries)
+
     if unassigned:
         skeleton['warnings'].append(
             f"有 {len(unassigned)} 条日志条目未归属到任何项目标签"
@@ -251,17 +263,66 @@ def build_review_skeleton(signals, summary_mode='project_focused', evidence_mode
     return skeleton
 
 
+def detect_work_phases(entries):
+    """按周分组，检测每月的工作阶段和重心转移。
+
+    返回按时间排序的阶段列表，每个阶段包含日期范围、主导项目、
+    主导类别和任务数量。
+    """
+    if not entries:
+        return []
+
+    # 按周分桶（ISO week）
+    week_buckets = defaultdict(list)
+    for entry in entries:
+        date_str = entry['date']
+        try:
+            dt = datetime.strptime(date_str, '%Y.%m.%d')
+            week_key = dt.isocalendar()[:2]  # (year, week_number)
+        except ValueError:
+            week_key = date_str
+        week_buckets[week_key].append(entry)
+
+    phases = []
+    for week_key in sorted(week_buckets.keys()):
+        week_entries = week_buckets[week_key]
+        dates = sorted(set(e['date'] for e in week_entries))
+
+        # 主导项目（该周出现天数最多的）
+        project_day_counts = defaultdict(int)
+        for entry in week_entries:
+            for p in entry.get('projects', []):
+                project_day_counts[p] += 1
+        dominant_project = max(project_day_counts, key=project_day_counts.get) if project_day_counts else ''
+
+        # 主导类别
+        cat_counts = Counter()
+        for entry in week_entries:
+            cat_counts.update(entry.get('categories', []))
+        top_categories = [c for c, _ in cat_counts.most_common(3)]
+
+        # 任务数
+        task_count = sum(
+            len(e.get('completed_tasks', [])) + len(e.get('incomplete_tasks', []))
+            for e in week_entries
+        )
+
+        phases.append({
+            'period': f"{dates[0]}-{dates[-1]}" if len(dates) > 1 else dates[0],
+            'work_days': len(dates),
+            'dominant_project': dominant_project,
+            'dominant_categories': top_categories,
+            'task_count': task_count,
+        })
+
+    return phases
+
+
 def build_engineering_details(entries, project_entries):
     """构建 engineering_review 模式的额外详情。"""
     details = {
-        'category_distribution': {},
         'daily_intensity': {},
     }
-
-    all_categories = []
-    for entry in entries:
-        all_categories.extend(entry.get('categories', []))
-    details['category_distribution'] = dict(Counter(all_categories))
 
     for entry in entries:
         date = entry['date']
