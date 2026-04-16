@@ -13,20 +13,20 @@ Designed for Obsidian Daily Note workflows, but works with any Markdown file tha
 | File | Description |
 |------|-------------|
 | `YYYY-MM.md` | Raw monthly archive — original content, unmodified |
-| `YYYY-MM.summary.md` | Structured monthly summary — written by Claude based on template rules |
+| `YYYY-MM.summary.md` | Structured monthly summary — written by Claude in narrative style |
 
 The summary extracts:
 - Projects worked on and their active days
+- Work category distribution (能力升级/结构变更/问题定位/etc.)
+- Work rhythm analysis across the month
 - Key accomplishments grouped by project and theme
-- In-progress items and pending follow-ups
-- Risk signals and next steps
+- Risks and next steps for handoff
 
 ## Quick Start
 
 ### Install
 
 ```bash
-# Clone into your Claude Code skills directory
 git clone https://github.com/KKenny0/worklog-monthly-review-skill.git \
   ~/.claude/skills/daily-note-monthly-review
 ```
@@ -88,7 +88,8 @@ Daily Note.md
 └──────────┬───────────────┘
            ▼
 ┌──────────────────────────┐
-│  Step 4: Build Summary   │  Claude reads archive + template → YYYY-MM.summary.md
+│  Step 4: Build Summary   │  scripts/build_monthly_review.py → YYYY-MM.skeleton.json
+│                          │  Claude reads archive + template → YYYY-MM.summary.md
 └──────────┬───────────────┘
            ▼
 ┌──────────────────────────┐
@@ -96,14 +97,17 @@ Daily Note.md
 └──────────────────────────┘
 ```
 
-Steps 2-3 use deterministic Python scripts. Step 4 is where Claude reads the original archive and the summary template, then writes the monthly summary directly — no rigid templates, but guided by evidence-based rules.
+Steps 2-4a use deterministic Python scripts. Step 4b is where Claude reads the skeleton data and the summary template, then writes the monthly summary in narrative style.
 
-## Design Principles
+## Summary Output Style
 
-- **Facts first:** Every claim in the summary traces back to an original entry. No fabrication.
-- **Inductive, not exhaustive:** Related tasks are grouped into theme paragraphs, not listed one by one.
-- **Original untouched:** The monthly archive preserves the original Markdown exactly.
-- **Summary ≠ report:** This skill produces factual summaries, not performance reviews or polished reports. That's a different layer.
+The summary is written in **narrative paragraphs** (not bullet lists), following these principles:
+
+- **Facts first:** Every claim traces back to an original entry. No fabrication.
+- **Selective:** Only 2-3 core themes per project; routine work merged into one sentence.
+- **Rhythm-aware:** The overview captures work phases (e.g. "early month focused on X, shifted to Y mid-month").
+- **Quantitative:** Category distribution table and performance metrics when available.
+- **Structured sections:** Overview → Work Distribution → Main Threads → Project Narratives → Risks → Next Steps → Data Notes.
 
 ## Configuration
 
@@ -127,8 +131,7 @@ daily-note-monthly-review/
 └── reference/
     ├── daily-note-format.md          # Daily Note format specification
     ├── worklog-summary-template.md   # Summary template and writing rules
-    ├── project-tagging-guide.md      # Project classification methodology
-    └── output-examples.md            # Input/output examples
+    └── project-tagging-guide.md      # Project classification methodology
 ```
 
 ## License
